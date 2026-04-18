@@ -1,0 +1,15 @@
+{
+  "listen_addr": ":8443",
+  "private_key_path": "keys/private.pem",
+  "tls_cert_path": "certs/server.crt",
+  "tls_key_path": "certs/server.key",
+  "ip_whitelist": [],
+  "jwt_secret": "test-jwt-secret-key-2024",
+  "jwt_expire_hours": 8,
+  "db_driver": "sqlite",
+  "db_dsn": "audit.db",
+  "users": [
+    {"username": "admin", "password": "admin123"},
+    {"username": "operator01", "password": "op01pass"}
+  ]
+}
