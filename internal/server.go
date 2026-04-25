@@ -15,6 +15,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const LicenseVersion = 1
+
 type Server struct {
 	keyMgr      *KeyManager
 	audit       *AuditStore
@@ -192,11 +194,13 @@ func (s *Server) handleIssueLicense(w http.ResponseWriter, r *http.Request) {
 	issuedAt := now.Format(time.RFC3339)
 	expiresAt := now.AddDate(0, 0, req.ValidDays).Format(time.RFC3339)
 
-	// Build envelope as sorted-key map for deterministic cross-language verification
+	// Build envelope as sorted-key map for deterministic cross-language verification.
+	// "version" is included in the signed data so it cannot be tampered with.
 	envelopeMap := map[string]interface{}{
 		"expires_at": expiresAt,
 		"issued_at":  issuedAt,
 		"payload":    req.Payload,
+		"version":    LicenseVersion,
 	}
 	envelopeBytes, _ := json.Marshal(envelopeMap)
 
@@ -226,6 +230,7 @@ func (s *Server) handleIssueLicense(w http.ResponseWriter, r *http.Request) {
 		operator, clientIP, string(req.Payload), expiresAt)
 
 	lic := &LicenseFile{
+		Version:   LicenseVersion,
 		Payload:   req.Payload,
 		IssuedAt:  issuedTime,
 		ExpiresAt: expiresTime,

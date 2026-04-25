@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"net"
 	"os"
 	"time"
 )
@@ -81,13 +80,12 @@ func GenerateTLSCert(certPath, keyPath string) error {
 	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
-		Subject:      pkix.Name{Organization: []string{"License Server"}, CommonName: "localhost"},
+		Subject:      pkix.Name{Organization: []string{"License Server"}, CommonName: "license.server"},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().AddDate(3, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:     []string{"license.server"},
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &privKey.PublicKey, privKey)

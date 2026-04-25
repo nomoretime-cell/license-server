@@ -19,6 +19,7 @@ type LicenseEnvelope struct {
 }
 
 type LicenseFile struct {
+	Version   int             `json:"version"`
 	Payload   json.RawMessage `json:"payload"`
 	IssuedAt  time.Time       `json:"issued_at"`
 	ExpiresAt time.Time       `json:"expires_at"`

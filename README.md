@@ -44,10 +44,20 @@ go run cmd/server/main.go -genkeys
 生成的文件：
 - `keys/private.pem` — License 签名私钥，仅留在服务端
 - `keys/public.pem` — License 验签公钥，硬编码进相机固件
-- `certs/server.crt` — TLS 证书（自签名，生产环境建议替换为正式证书）
+- `certs/server.crt` — TLS 证书（自签名，SAN 为 `license.server`）
 - `certs/server.key` — TLS 私钥
 
-### 2. 本地运行
+### 2. 客户端配置 hosts
+
+证书的 SAN 绑定了固定域名 `license.server`，客户端需要在 hosts 文件中将该域名指向实际的服务器 IP，然后通过 `https://license.server:8443` 访问。更换服务器时只需修改 hosts 中的 IP，证书和代码无需变动。
+
+```bash
+# Linux/macOS: /etc/hosts
+# Windows: C:\Windows\System32\drivers\etc\hosts
+192.168.0.185  license.server
+```
+
+### 3. 本地运行
 
 ```bash
 go run cmd/server/main.go -config config.json
@@ -75,14 +85,15 @@ docker run -d --name license-server -p 8443:8443 license-server
 
 ```bash
 docker run -d --name license-server -p 8443:8443 \
+  --restart=always \
   -v $(pwd)/keys:/app/keys:ro \
   -v $(pwd)/certs:/app/certs:ro \
   -v $(pwd)/config.json:/app/config.json:ro \
   -v $(pwd)/data:/app/data \
-  license-server
+  license-server:$(date +%Y%m%d)-$(git rev-parse --short HEAD)
 ```
 
-> 挂载 `data` 目录并将 `config.json` 中 `db_dsn` 改为 `data/audit.db`，确保容器重启后审计日志不丢失。
+> `config.json` 中 `db_dsn` 设为 `data/audit.db`，挂载目录比挂载单个文件更健壮，容器重启后审计日志不丢失。
 
 ### 4. 运行测试
 
@@ -141,19 +152,19 @@ sqlite3 audit.db "SELECT id, operator, payload, issued_at FROM audit_logs;"
 |------|------|------|
 | `server.crt` | TLS 证书（自签名时需要） | 由服务端管理员提供，用于信任 HTTPS 连接 |
 | 员工账号密码 | JWT 登录凭证 | 服务端 `config.json` 中的 `users` 配置 |
-| 服务端地址 | 如 `https://license.example.com:8443` | 部署后确定 |
+| 服务端地址 | `https://license.server:8443`（需配置 hosts 指向服务器 IP） | 部署后确定 |
 
 **工作流程（伪代码）：**
 
 ```python
 import ssl
 
-# 信任自签名证书（生产环境用正式证书则不需要）
+# 信任自签名证书（客户端需在 hosts 中将 license.server 指向服务器 IP）
 ctx = ssl.create_default_context()
 ctx.load_verify_locations("server.crt")
 
 # 1. 登录获取 JWT
-resp = POST("https://license.example.com:8443/api/v1/login",
+resp = POST("https://license.server:8443/api/v1/login",
     body={"username": "operator01", "password": "op01pass"},
     ssl_context=ctx)
 token = resp["data"]["token"]
@@ -167,7 +178,7 @@ hardware_payload = {
 }
 
 # 3. 申请 License
-resp = POST("https://license.example.com:8443/api/v1/license/issue",
+resp = POST("https://license.server:8443/api/v1/license/issue",
     headers={"Authorization": f"Bearer {token}"},
     body={"payload": hardware_payload, "valid_days": 3650},
     ssl_context=ctx)
@@ -193,6 +204,7 @@ write_file("/camera/.license/License.lic", json.dumps(license_data))
 
 ```json
 {
+  "version": 1,
   "payload": {
     "camera_model": "CAM-X100",
     "cpu_uid": "CPU-UID-00001",
@@ -218,7 +230,7 @@ write_file("/camera/.license/License.lic", json.dumps(license_data))
 
 **验证流程（C/C++ 伪代码）：**
 
-签名覆盖的内容是 **envelope**（`payload` + `issued_at` + `expires_at`），按 key 字母序排列。
+签名覆盖的内容是 **envelope**（`version` + `payload` + `issued_at` + `expires_at`），按 key 字母序排列。
 
 ```c
 int verify_license() {
@@ -230,29 +242,36 @@ int verify_license() {
     json_t *lic = json_parse(lic_json);
     unsigned char *sig_raw = base64_decode(lic->signature);
 
-    // 3. 重建签名信封（key 按字母序，紧凑格式，与服务端一致）
-    //    {"expires_at":"...","issued_at":"...","payload":{...}}
-    char *envelope_str = json_build_compact_sorted(
-        "expires_at", lic->expires_at,
-        "issued_at",  lic->issued_at,
-        "payload",    lic->payload    // payload 内部 key 也按字母序
-    );
+    // 3. 根据 version 选择对应的验签逻辑（为未来升级加解密算法预留）
+    switch (lic->version) {
+    case 1:
+        // 重建签名信封（key 按字母序，紧凑格式，与服务端一致）
+        // {"expires_at":"...","issued_at":"...","payload":{...},"version":1}
+        char *envelope_str = json_build_compact_sorted(
+            "expires_at", lic->expires_at,
+            "issued_at",  lic->issued_at,
+            "payload",    lic->payload,   // payload 内部 key 也按字母序
+            "version",    lic->version
+        );
+        // 用内置公钥验证签名
+        int ok = rsa_verify_pkcs1_sha256(
+            EMBEDDED_PUBLIC_KEY,
+            envelope_str, strlen(envelope_str),
+            sig_raw, sig_raw_len
+        );
+        if (!ok) return ERROR_INVALID_SIGNATURE;
+        break;
+    default:
+        return ERROR_UNSUPPORTED_VERSION;
+    }
 
-    // 4. 用内置公钥验证签名
-    int ok = rsa_verify_pkcs1_sha256(
-        EMBEDDED_PUBLIC_KEY,
-        envelope_str, strlen(envelope_str),
-        sig_raw, sig_raw_len
-    );
-    if (!ok) return ERROR_INVALID_SIGNATURE;
-
-    // 5. 校验硬件指纹（业务字段在 payload 内部，由客户端自行定义和解析）
+    // 4. 校验硬件指纹（业务字段在 payload 内部，由客户端自行定义和解析）
     if (strcmp(lic->payload->mac_address, get_local_mac()) != 0)
         return ERROR_MAC_MISMATCH;
     if (strcmp(lic->payload->cpu_uid, get_local_cpu_uid()) != 0)
         return ERROR_CPU_MISMATCH;
 
-    // 6. 校验有效期
+    // 5. 校验有效期
     if (current_time() > parse_time(lic->expires_at))
         return ERROR_LICENSE_EXPIRED;
 
@@ -265,6 +284,7 @@ int verify_license() {
 - **服务端业务无关**：服务端不解析 `payload` 内容，只负责签名和记录，新增/修改硬件字段无需改服务端代码
 - **公钥硬编码**：`public.pem` 的内容在编译时以字节数组形式嵌入二进制，不以文件形式存在于文件系统
 - **JSON 序列化一致性**：验签时 envelope 的 JSON 必须与服务端完全一致 —— **紧凑格式，key 按字母序**（包括嵌套的 payload），服务端使用 Go `json.Marshal` 对 `map[string]interface{}` 序列化（天然字母序）
+- **版本字段**：`version` 包含在签名 envelope 中，不可篡改；相机端根据 `version` 走对应验签分支，升级加解密逻辑时旧 License 仍可正常验证
 - **硬件绑定**：License 复制到其他设备会因 MAC/CPU UID 不匹配而失败
 - **篡改检测**：修改任何字段（payload 或有效期），签名验证就会失败
 
