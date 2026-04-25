@@ -59,7 +59,13 @@ go run cmd/server/main.go -config config.json
 
 ```bash
 # 构建镜像
-docker build -t license-server .
+# 同时传大写和小写是因为 Go 工具链读的是大写变量，而部分 Linux 工具读的是小写变量，两者都传可以确保兼容。
+docker build \
+  --build-arg http_proxy=http://192.168.0.45:7897 \
+  --build-arg https_proxy=http://192.168.0.45:7897 \
+  --build-arg HTTP_PROXY=http://192.168.0.45:7897 \
+  --build-arg HTTPS_PROXY=http://192.168.0.45:7897 \
+  -t license-server:$(date +%Y%m%d)-$(git rev-parse --short HEAD) .
 
 # 运行容器
 docker run -d --name license-server -p 8443:8443 license-server
